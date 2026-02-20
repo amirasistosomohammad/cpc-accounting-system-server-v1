@@ -8,8 +8,7 @@ return [
     'allowed_origins' => [
         'http://localhost:5173',
         'http://localhost:3001',
-        'https://brimsclient-ihpwt.ondigitalocean.app',
-        'https://automatedcivilrecords-client-3s725.ondigitalocean.app',
+        'https://cpc-client-vj8bx.ondigitalocean.app',
     ],
 
     'allowed_origins_patterns' => [],
