@@ -5,12 +5,13 @@ namespace App\Http\Controllers;
 use App\Models\ChartOfAccount;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class ChartOfAccountController extends Controller
 {
     /**
-     * Get all chart of accounts
+     * Get all chart of accounts. Balances loaded in one query to avoid 504 on production.
      */
     public function index(Request $request): JsonResponse
     {
@@ -21,11 +22,8 @@ class ChartOfAccountController extends Controller
         if ($request->has('account_type_id')) {
             $query->where('account_type_id', $request->account_type_id);
         } elseif ($request->has('category') && in_array($request->category, ['expense', 'revenue'], true)) {
-            // Fully dynamic: filter by account_types.category only (no hardcoded type codes/IDs).
-            // Any chart of account whose account type has this category is included.
             $category = $request->category;
             $query->whereHas('accountType', function ($q) use ($category, $accountId) {
-                // Restrict to current business account types (tenant isolation)
                 if ($accountId !== null && $accountId !== '') {
                     $q->where('account_types.account_id', $accountId);
                 }
@@ -36,7 +34,6 @@ class ChartOfAccountController extends Controller
                 }
             });
         } elseif ($request->has('account_type') && $accountId) {
-            // Look up type by code for the current business only (legacy)
             $accountType = \App\Models\AccountType::where('account_id', $accountId)
                 ->where('code', $request->account_type)
                 ->first();
@@ -45,12 +42,10 @@ class ChartOfAccountController extends Controller
             }
         }
 
-        // Filter active only if requested (qualify column: both chart_of_accounts and account_types have is_active when joined)
         if ($request->boolean('active_only', true)) {
             $query->where('chart_of_accounts.is_active', true);
         }
 
-        // Search by code or name
         if ($request->has('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -61,10 +56,26 @@ class ChartOfAccountController extends Controller
 
         $accounts = $query->orderBy('account_code')->get();
 
-        // Ensure balance and account_type (from accessor) are included when serialized
-        $accounts->each(function ($account) {
-            $account->setAttribute('balance', $account->balance);
-        });
+        // One query for all balances (same structure as income-statement / other reports)
+        $coaIds = $accounts->pluck('id')->all();
+        $balances = [];
+        if (!empty($coaIds)) {
+            $rows = DB::table('journal_entry_lines')
+                ->selectRaw('account_id, COALESCE(SUM(debit_amount),0) as debits, COALESCE(SUM(credit_amount),0) as credits')
+                ->whereIn('account_id', $coaIds)
+                ->groupBy('account_id')
+                ->get();
+            foreach ($rows as $row) {
+                $balances[(int) $row->account_id] = [(float) $row->debits, (float) $row->credits];
+            }
+        }
+
+        foreach ($accounts as $account) {
+            $d = $balances[$account->id][0] ?? 0;
+            $c = $balances[$account->id][1] ?? 0;
+            $balance = $account->normal_balance === 'DR' ? $d - $c : $c - $d;
+            $account->setAttribute('balance', $balance);
+        }
 
         return response()->json($accounts);
     }

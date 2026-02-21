@@ -139,8 +139,7 @@ class ReportController extends Controller
     }
 
     /**
-     * Balance Sheet — dynamic by account type category (asset, liability, equity).
-     * Includes all COAs whose account type has category in asset/liability/equity.
+     * Balance Sheet — dynamic by account type category. One bulk query for balances to avoid 504.
      */
     public function balanceSheet(Request $request): JsonResponse
     {
@@ -165,43 +164,26 @@ class ReportController extends Controller
             ->orderBy('account_code')
             ->get();
 
-        $lines = [];
+        $accountIds = $accounts->pluck('id')->all();
+        $balancesById = $this->balancesByAccountIdAndDateRange($accountIds, $startDate, $endDate);
 
+        $lines = [];
         foreach ($accounts as $account) {
             $category = $account->account_type_category;
             if ($category === null || !isset($sections[$category])) {
                 continue;
             }
-
-            $query = DB::table('journal_entry_lines')
-                ->join('journal_entries', 'journal_entry_lines.journal_entry_id', '=', 'journal_entries.id')
-                ->where('journal_entry_lines.account_id', $account->id);
-
-            if ($startDate) {
-                $query->where('journal_entries.entry_date', '>=', $startDate);
-            }
-            if ($endDate) {
-                $query->where('journal_entries.entry_date', '<=', $endDate);
-            }
-
-            $debits = (float) $query->sum('journal_entry_lines.debit_amount');
-            $credits = (float) $query->sum('journal_entry_lines.credit_amount');
-
-            $balance = $account->normal_balance === 'DR'
-                ? $debits - $credits
-                : $credits - $debits;
-
+            [$debits, $credits] = $balancesById[$account->id] ?? [0, 0];
+            $balance = $account->normal_balance === 'DR' ? $debits - $credits : $credits - $debits;
             $lines[] = [
                 'account_code' => $account->account_code,
                 'account_name' => $account->account_name,
                 'account_type' => $category,
                 'balance' => round($balance, 2),
             ];
-
             $sections[$category]['total'] += $balance;
         }
 
-        // Current period net income (by category: revenue, expense, other) included in equity
         $pnl = $this->computeNetIncome($startDate, $endDate);
         $sections[AccountType::CATEGORY_EQUITY]['total'] += $pnl;
 
@@ -221,7 +203,33 @@ class ReportController extends Controller
     }
 
     /**
-     * Helper: Compute Net Income for a date range — dynamic by category (revenue, expense).
+     * One query: account_id => [sum(debits), sum(credits)] for given account IDs and optional date range.
+     */
+    private function balancesByAccountIdAndDateRange(array $accountIds, $startDate, $endDate): array
+    {
+        if (empty($accountIds)) {
+            return [];
+        }
+        $q = DB::table('journal_entry_lines')
+            ->join('journal_entries', 'journal_entry_lines.journal_entry_id', '=', 'journal_entries.id')
+            ->whereIn('journal_entry_lines.account_id', $accountIds)
+            ->selectRaw('journal_entry_lines.account_id, COALESCE(SUM(journal_entry_lines.debit_amount),0) as debits, COALESCE(SUM(journal_entry_lines.credit_amount),0) as credits')
+            ->groupBy('journal_entry_lines.account_id');
+        if ($startDate) {
+            $q->where('journal_entries.entry_date', '>=', $startDate);
+        }
+        if ($endDate) {
+            $q->where('journal_entries.entry_date', '<=', $endDate);
+        }
+        $out = [];
+        foreach ($q->get() as $row) {
+            $out[(int) $row->account_id] = [(float) $row->debits, (float) $row->credits];
+        }
+        return $out;
+    }
+
+    /**
+     * Helper: Compute Net Income for a date range. One bulk query for balances.
      */
     private function computeNetIncome($startDate, $endDate): float
     {
@@ -234,33 +242,20 @@ class ReportController extends Controller
             })
             ->get();
 
+        $accountIds = $accounts->pluck('id')->all();
+        $balancesById = $this->balancesByAccountIdAndDateRange($accountIds, $startDate, $endDate);
+
         $net = 0;
-
         foreach ($accounts as $account) {
-            $query = DB::table('journal_entry_lines')
-                ->join('journal_entries', 'journal_entry_lines.journal_entry_id', '=', 'journal_entries.id')
-                ->where('journal_entry_lines.account_id', $account->id);
-
-            if ($startDate) {
-                $query->where('journal_entries.entry_date', '>=', $startDate);
-            }
-            if ($endDate) {
-                $query->where('journal_entries.entry_date', '<=', $endDate);
-            }
-
-            $debits = (float) $query->sum('journal_entry_lines.debit_amount');
-            $credits = (float) $query->sum('journal_entry_lines.credit_amount');
-
+            [$debits, $credits] = $balancesById[$account->id] ?? [0, 0];
             $amount = $account->normal_balance === 'CR' ? ($credits - $debits) : ($debits - $credits);
             $category = $account->account_type_category;
-
             if ($category === AccountType::CATEGORY_REVENUE) {
                 $net += $amount;
             } elseif ($category === AccountType::CATEGORY_EXPENSE) {
                 $net -= $amount;
             }
         }
-
         return $net;
     }
 
