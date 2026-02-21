@@ -7,75 +7,67 @@ use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Ensures CORS headers are on every API response (including 401, 403, 422, 500).
- * Browsers report "CORS error" when the response has no Access-Control-Allow-Origin,
- * so we add them here for allowed origins.
+ * CORS for CPC – no config, no env. Hardcoded so production always works.
  */
 class AddCorsHeaders
 {
-    public function handle(Request $request, Closure $next): Response
+    /** @var string[] */
+    private static $origins = [
+        'http://localhost:5173',
+        'http://localhost:3000',
+        'http://127.0.0.1:5173',
+        'http://127.0.0.1:3000',
+        'https://cpc-client-vj8bx.ondigitalocean.app',
+        'https://cpc-client-vj8hx.ondigitalocean.app',
+    ];
+
+    /** Pattern: any cpc-client-*.ondigitalocean.app (with or without trailing slash in Origin we normalize) */
+    private static function isOriginAllowed(string $origin): bool
     {
-        if (!$this->isCorsPath($request)) {
-            return $next($request);
-        }
-
-        // Handle preflight OPTIONS so browser gets CORS headers immediately
-        if ($request->isMethod('OPTIONS')) {
-            return $this->addCorsToResponse(response('', 200), $request);
-        }
-
-        $response = $next($request);
-        return $this->addCorsToResponse($response, $request);
-    }
-
-    private function isCorsPath(Request $request): bool
-    {
-        $path = $request->path();
-        // All API and auth paths
-        if (str_starts_with($path, 'api')) {
+        $origin = rtrim($origin, '/');
+        if (in_array($origin, self::$origins, true)) {
             return true;
         }
-        return in_array($path, ['login', 'logout', 'user', 'admin/login', 'personnel/login', 'sanctum/csrf-cookie'], true)
+        return (bool) preg_match('#^https://cpc-client-[a-z0-9-]+\.ondigitalocean\.app$#', $origin);
+    }
+
+    private static function isApiOrAuthPath(Request $request): bool
+    {
+        $path = $request->path();
+        return str_starts_with($path, 'api')
+            || in_array($path, ['login', 'logout', 'user', 'admin/login', 'personnel/login', 'sanctum/csrf-cookie'], true)
             || str_starts_with($path, 'storage/')
             || str_starts_with($path, 'personnel-avatar/');
     }
 
-    private function addCorsToResponse(Response $response, Request $request): Response
+    private static function addHeaders(Response $response, string $origin): void
     {
-        $origin = $request->header('Origin');
-        if (!$origin) {
-            return $response;
-        }
-
-        if (!$this->isOriginAllowed($origin)) {
-            return $response;
-        }
-
         $response->headers->set('Access-Control-Allow-Origin', $origin);
         $response->headers->set('Access-Control-Allow-Credentials', 'true');
         $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
         $response->headers->set('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With, X-Account-Id');
         $response->headers->set('Access-Control-Expose-Headers', 'Content-Disposition');
-
-        return $response;
     }
 
-    private function isOriginAllowed(string $origin): bool
+    public function handle(Request $request, Closure $next): Response
     {
-        $allowed = config('cors.allowed_origins', []);
-        if (in_array($origin, $allowed, true)) {
-            return true;
+        if (!self::isApiOrAuthPath($request)) {
+            return $next($request);
         }
-        $patterns = config('cors.allowed_origins_patterns', []);
-        foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $origin)) {
-                return true;
-            }
+
+        $origin = $request->header('Origin');
+        if (!$origin || !self::isOriginAllowed($origin)) {
+            return $next($request);
         }
-        // Fallback: allow CPC client on DigitalOcean even if config is cached wrong
-        if (preg_match('#^https://cpc-client-[a-z0-9-]+\.ondigitalocean\.app$#', $origin)) {
-            return true;
+
+        if ($request->isMethod('OPTIONS')) {
+            $response = response('', 200);
+            self::addHeaders($response, $origin);
+            return $response;
         }
-        return false;
+
+        $response = $next($request);
+        self::addHeaders($response, $origin);
+        return $response;
     }
 }

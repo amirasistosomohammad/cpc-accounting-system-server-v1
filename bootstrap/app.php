@@ -29,7 +29,7 @@ return Application::configure(basePath: dirname(__DIR__))
             }
             return $request->expectsJson();
         });
-        // Add CORS to error responses so browser does not hide 401/403/500 behind "CORS error"
+        // CORS on error responses – same hardcoded allow as AddCorsHeaders (no config)
         $exceptions->respond(function (Response $response, \Throwable $e, Request $request) {
             $path = $request->path();
             if (!str_starts_with($path, 'api') && $path !== 'login' && $path !== 'user') {
@@ -39,20 +39,9 @@ return Application::configure(basePath: dirname(__DIR__))
             if (!$origin) {
                 return $response;
             }
-            $allowed = config('cors.allowed_origins', []);
-            $patterns = config('cors.allowed_origins_patterns', []);
-            $ok = in_array($origin, $allowed, true);
-            if (!$ok && !empty($patterns)) {
-                foreach ($patterns as $pattern) {
-                    if (preg_match($pattern, $origin)) {
-                        $ok = true;
-                        break;
-                    }
-                }
-            }
-            if (!$ok && preg_match('#^https://cpc-client-[a-z0-9-]+\.ondigitalocean\.app$#', $origin)) {
-                $ok = true;
-            }
+            $originTrimmed = rtrim($origin, '/');
+            $allowed = ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173', 'http://127.0.0.1:3000', 'https://cpc-client-vj8bx.ondigitalocean.app', 'https://cpc-client-vj8hx.ondigitalocean.app'];
+            $ok = in_array($originTrimmed, $allowed, true) || preg_match('#^https://cpc-client-[a-z0-9-]+\.ondigitalocean\.app$#', $originTrimmed);
             if ($ok) {
                 $response->headers->set('Access-Control-Allow-Origin', $origin);
                 $response->headers->set('Access-Control-Allow-Credentials', 'true');

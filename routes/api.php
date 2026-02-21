@@ -5,6 +5,9 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 
+// CORS check: open from client origin; response must have Access-Control-Allow-Origin (no auth)
+Route::get('/cors-test', fn () => response()->json(['cors' => 'ok', 'message' => 'If you see this from the client app, CORS is working.']));
+
 // Public routes
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/admin/login', [AuthController::class, 'adminLogin']);
