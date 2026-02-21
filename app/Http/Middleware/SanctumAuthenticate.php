@@ -9,48 +9,45 @@ use Laravel\Sanctum\PersonalAccessToken;
 
 class SanctumAuthenticate
 {
-    /**
-     * Handle an incoming request.
-     *
-     * @param  \Closure(\Illuminate\Http\Request): (\Symfony\Component\HttpFoundation\Response)  $next
-     */
+    /** Add CORS to 401 so browser can read response and client can redirect to login */
+    private function json401(Request $request, string $message): Response
+    {
+        $response = response()->json(['success' => false, 'message' => $message], 401);
+        $origin = $request->header('Origin');
+        if ($origin && ((str_contains($origin, 'cpc-client-') && str_contains($origin, 'ondigitalocean.app')) || in_array($origin, ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173', 'http://127.0.0.1:3000'], true))) {
+            $response->headers->set('Access-Control-Allow-Origin', $origin);
+            $response->headers->set('Access-Control-Allow-Credentials', 'true');
+            $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+            $response->headers->set('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With, X-Account-Id');
+        }
+        return $response;
+    }
+
     public function handle(Request $request, Closure $next): Response
     {
         $token = $request->bearerToken();
-        
+
         if (!$token) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthenticated',
-            ], 401);
+            return $this->json401($request, 'Unauthenticated');
         }
-        
-        // Find the token in the database
+
         $accessToken = PersonalAccessToken::findToken($token);
-        
+
         if (!$accessToken) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Invalid token',
-            ], 401);
+            return $this->json401($request, 'Invalid token');
         }
-        
-        // Check if token is expired
+
         if ($accessToken->expires_at && $accessToken->expires_at->isPast()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Token expired',
-            ], 401);
+            return $this->json401($request, 'Token expired');
         }
-        
-        // Set the authenticated user
+
         $user = $accessToken->tokenable;
         if ($user) {
             $request->setUserResolver(function () use ($user) {
                 return $user;
             });
         }
-        
+
         return $next($request);
     }
 }
