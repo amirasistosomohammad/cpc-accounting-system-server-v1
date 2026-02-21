@@ -14,8 +14,8 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        // Add CORS headers to every API response (including 401/403/422) so browser doesn't report "CORS error"
         $middleware->prepend(\App\Http\Middleware\AddCorsHeaders::class);
+        $middleware->validateCsrfTokens(except: ['api/*']);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // Return JSON for API routes

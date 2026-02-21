@@ -1,7 +1,18 @@
 <?php
 
 return [
-    'paths' => ['api/*', 'login', 'logout', 'sanctum/csrf-cookie', 'user', 'storage/*', 'avatars/*', 'personnel-avatar/*'],
+    'paths' => [
+        'api/*',
+        'login',
+        'logout',
+        'admin/login',
+        'personnel/login',
+        'sanctum/csrf-cookie',
+        'user',
+        'storage/*',
+        'avatars/*',
+        'personnel-avatar/*',
+    ],
 
     'allowed_methods' => ['*'],
 
@@ -16,14 +27,20 @@ return [
     ],
 
     'allowed_origins_patterns' => [
-        '#^https://cpc-client-[a-z0-9-]+\.ondigitalocean\.app$#',
+        '#^https://cpc-client-.*\.ondigitalocean\.app$#',
     ],
 
     'allowed_headers' => ['*'],
 
-    'exposed_headers' => [],
+    'exposed_headers' => [
+        'Authorization',
+        'X-Requested-With',
+        'Content-Type',
+        'X-Account-Id',
+        'X-CSRF-TOKEN',
+    ],
 
-    'max_age' => 0,
+    'max_age' => 86400,
 
     'supports_credentials' => true,
 ];
