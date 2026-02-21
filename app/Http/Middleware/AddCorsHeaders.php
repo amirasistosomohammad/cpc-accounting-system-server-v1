@@ -31,7 +31,13 @@ class AddCorsHeaders
     private function isCorsPath(Request $request): bool
     {
         $path = $request->path();
-        return str_starts_with($path, 'api') || $path === 'login' || $path === 'user';
+        // All API and auth paths
+        if (str_starts_with($path, 'api')) {
+            return true;
+        }
+        return in_array($path, ['login', 'logout', 'user', 'admin/login', 'personnel/login', 'sanctum/csrf-cookie'], true)
+            || str_starts_with($path, 'storage/')
+            || str_starts_with($path, 'personnel-avatar/');
     }
 
     private function addCorsToResponse(Response $response, Request $request): Response
@@ -65,6 +71,10 @@ class AddCorsHeaders
             if (preg_match($pattern, $origin)) {
                 return true;
             }
+        }
+        // Fallback: allow CPC client on DigitalOcean even if config is cached wrong
+        if (preg_match('#^https://cpc-client-[a-z0-9-]+\.ondigitalocean\.app$#', $origin)) {
+            return true;
         }
         return false;
     }
