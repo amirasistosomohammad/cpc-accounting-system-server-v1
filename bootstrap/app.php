@@ -14,8 +14,8 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        // No middleware needed for API token authentication
-        // EnsureFrontendRequestsAreStateful is only for SPA cookie-based auth
+        // Add CORS headers to every API response (including 401/403/422) so browser doesn't report "CORS error"
+        $middleware->prepend(\App\Http\Middleware\AddCorsHeaders::class);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // Return JSON for API routes
