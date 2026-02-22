@@ -51,12 +51,15 @@ Route::middleware([
     // Account Types (per business account – scoped by X-Account-Id when sent)
     Route::apiResource('account-types', \App\Http\Controllers\AccountTypeController::class);
 
+    // COA list: fast raw query, NO RequireAccount (avoids 504 → CORS). Same auth + SetCurrentAccount.
+    Route::get('accounting/chart-of-accounts-list', [\App\Http\Controllers\ChartOfAccountController::class, 'indexList']);
+
     // Accounting Routes (require X-Account-Id and valid access)
     Route::middleware([\App\Http\Middleware\RequireAccount::class])->prefix('accounting')->group(function () {
         // Dashboard
         Route::get('dashboard', [\App\Http\Controllers\DashboardController::class, 'index']);
 
-        // Chart of Accounts
+        // Chart of Accounts (full CRUD; list also available via chart-of-accounts-list above for speed)
         Route::apiResource('chart-of-accounts', \App\Http\Controllers\ChartOfAccountController::class);
 
         // Journal Entries

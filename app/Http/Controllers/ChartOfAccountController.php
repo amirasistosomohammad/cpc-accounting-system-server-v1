@@ -11,6 +11,56 @@ use Illuminate\Validation\Rule;
 class ChartOfAccountController extends Controller
 {
     /**
+     * Lightweight COA list: one raw DB query, no Eloquent/scopes. Use this for Business Accounts
+     * to avoid 504 (gateway timeout → no CORS header → "CORS error"). Same auth + SetCurrentAccount.
+     */
+    public function indexList(Request $request): JsonResponse
+    {
+        $accountId = $request->attributes->get('current_account_id');
+        if ($accountId === null || $accountId === '') {
+            return response()->json([]);
+        }
+
+        $activeOnly = $request->boolean('active_only', false);
+        $query = DB::table('chart_of_accounts')
+            ->leftJoin('account_types', 'chart_of_accounts.account_type_id', '=', 'account_types.id')
+            ->where('chart_of_accounts.account_id', $accountId)
+            ->orderBy('chart_of_accounts.account_code')
+            ->select(
+                'chart_of_accounts.id',
+                'chart_of_accounts.account_code',
+                'chart_of_accounts.account_name',
+                'chart_of_accounts.account_type_id',
+                'chart_of_accounts.normal_balance',
+                'chart_of_accounts.is_active',
+                'chart_of_accounts.description',
+                'account_types.code as account_type',
+                'account_types.category as account_type_category'
+            );
+        if ($activeOnly) {
+            $query->where('chart_of_accounts.is_active', true);
+        }
+        $rows = $query->get();
+
+        $list = [];
+        foreach ($rows as $row) {
+            $list[] = [
+                'id' => (int) $row->id,
+                'account_code' => $row->account_code,
+                'account_name' => $row->account_name,
+                'account_type_id' => (int) $row->account_type_id,
+                'normal_balance' => $row->normal_balance,
+                'is_active' => (bool) $row->is_active,
+                'description' => $row->description,
+                'balance' => 0,
+                'account_type' => $row->account_type,
+                'account_type_category' => $row->account_type_category,
+            ];
+        }
+        return response()->json($list);
+    }
+
+    /**
      * Get all chart of accounts. Balances loaded in one query to avoid 504 on production.
      */
     public function index(Request $request): JsonResponse
