@@ -56,25 +56,30 @@ class ChartOfAccountController extends Controller
 
         $accounts = $query->orderBy('account_code')->get();
 
-        // One query for all balances (same structure as income-statement / other reports)
-        $coaIds = $accounts->pluck('id')->all();
-        $balances = [];
-        if (!empty($coaIds)) {
-            $rows = DB::table('journal_entry_lines')
-                ->selectRaw('account_id, COALESCE(SUM(debit_amount),0) as debits, COALESCE(SUM(credit_amount),0) as credits')
-                ->whereIn('account_id', $coaIds)
-                ->groupBy('account_id')
-                ->get();
-            foreach ($rows as $row) {
-                $balances[(int) $row->account_id] = [(float) $row->debits, (float) $row->credits];
+        // Skip balance query when no_balance=1 so response is fast and never 504 (gateway timeout = no CORS header = "CORS error")
+        if (!$request->boolean('no_balance', false)) {
+            $coaIds = $accounts->pluck('id')->all();
+            $balances = [];
+            if (!empty($coaIds)) {
+                $rows = DB::table('journal_entry_lines')
+                    ->selectRaw('account_id, COALESCE(SUM(debit_amount),0) as debits, COALESCE(SUM(credit_amount),0) as credits')
+                    ->whereIn('account_id', $coaIds)
+                    ->groupBy('account_id')
+                    ->get();
+                foreach ($rows as $row) {
+                    $balances[(int) $row->account_id] = [(float) $row->debits, (float) $row->credits];
+                }
             }
-        }
-
-        foreach ($accounts as $account) {
-            $d = $balances[$account->id][0] ?? 0;
-            $c = $balances[$account->id][1] ?? 0;
-            $balance = $account->normal_balance === 'DR' ? $d - $c : $c - $d;
-            $account->setAttribute('balance', $balance);
+            foreach ($accounts as $account) {
+                $d = $balances[$account->id][0] ?? 0;
+                $c = $balances[$account->id][1] ?? 0;
+                $balance = $account->normal_balance === 'DR' ? $d - $c : $c - $d;
+                $account->setAttribute('balance', $balance);
+            }
+        } else {
+            foreach ($accounts as $account) {
+                $account->setAttribute('balance', 0);
+            }
         }
 
         return response()->json($accounts);
