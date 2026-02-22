@@ -25,7 +25,13 @@ class SetCurrentAccount
         }
 
         if (!$accountId) {
-            $request->attributes->set('current_account_id', null);
+            // Default to first account user has access to so COA/accounting routes work when client hasn't sent X-Account-Id yet
+            $query = $user->accounts();
+            if (!$user instanceof Admin) {
+                $query->where('accounts.is_active', true);
+            }
+            $first = $query->orderBy('accounts.name')->first();
+            $request->attributes->set('current_account_id', $first ? (int) $first->id : null);
             return $next($request);
         }
 
