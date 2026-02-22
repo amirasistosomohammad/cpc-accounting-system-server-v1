@@ -13,7 +13,7 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 class ReportController extends Controller
 {
     /**
-     * Trial Balance
+     * Trial Balance — one bulk balance query to avoid 504 (gateway timeout → CORS error).
      */
     public function trialBalance(Request $request): JsonResponse
     {
@@ -21,27 +21,14 @@ class ReportController extends Controller
         $endDate = $request->get('end_date');
 
         $accounts = ChartOfAccount::with('accountType')->orderBy('account_code')->get();
+        $accountIds = $accounts->pluck('id')->all();
+        $balancesById = $this->balancesByAccountIdAndDateRange($accountIds, $startDate, $endDate);
 
-        $data = $accounts->map(function ($account) use ($startDate, $endDate) {
-            $query = DB::table('journal_entry_lines')
-                ->join('journal_entries', 'journal_entry_lines.journal_entry_id', '=', 'journal_entries.id')
-                ->where('journal_entry_lines.account_id', $account->id);
-
-            if ($startDate) {
-                $query->where('journal_entries.entry_date', '>=', $startDate);
-            }
-            if ($endDate) {
-                $query->where('journal_entries.entry_date', '<=', $endDate);
-            }
-
-            $debits = (float) $query->sum('journal_entry_lines.debit_amount');
-            $credits = (float) $query->sum('journal_entry_lines.credit_amount');
-
-            // Compute balance respecting normal balance
-            $balance = $account->normal_balance === 'DR'    
+        $data = $accounts->map(function ($account) use ($balancesById) {
+            [$debits, $credits] = $balancesById[$account->id] ?? [0, 0];
+            $balance = $account->normal_balance === 'DR'
                 ? $debits - $credits
                 : $credits - $debits;
-
             return [
                 'account_code' => $account->account_code,
                 'account_name' => $account->account_name,
@@ -87,6 +74,8 @@ class ReportController extends Controller
             ->orderBy('account_code')
             ->get();
 
+        $accountIds = $accounts->pluck('id')->all();
+        $balancesById = $this->balancesByAccountIdAndDateRange($accountIds, $startDate, $endDate);
         $lines = [];
 
         foreach ($accounts as $account) {
@@ -94,30 +83,14 @@ class ReportController extends Controller
             if ($category === null || !isset($sections[$category])) {
                 continue;
             }
-
-            $query = DB::table('journal_entry_lines')
-                ->join('journal_entries', 'journal_entry_lines.journal_entry_id', '=', 'journal_entries.id')
-                ->where('journal_entry_lines.account_id', $account->id);
-
-            if ($startDate) {
-                $query->where('journal_entries.entry_date', '>=', $startDate);
-            }
-            if ($endDate) {
-                $query->where('journal_entries.entry_date', '<=', $endDate);
-            }
-
-            $debits = (float) $query->sum('journal_entry_lines.debit_amount');
-            $credits = (float) $query->sum('journal_entry_lines.credit_amount');
-
+            [$debits, $credits] = $balancesById[$account->id] ?? [0, 0];
             $amount = $account->normal_balance === 'CR' ? ($credits - $debits) : ($debits - $credits);
-
             $lines[] = [
                 'account_code' => $account->account_code,
                 'account_name' => $account->account_name,
                 'account_type' => $category,
                 'amount' => round($amount, 2),
             ];
-
             $sections[$category]['total'] += $amount;
         }
 
