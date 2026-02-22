@@ -22,6 +22,7 @@ class ChartOfAccountController extends Controller
         }
 
         $activeOnly = $request->boolean('active_only', false);
+        $category = $request->has('category') && in_array($request->category, ['expense', 'revenue'], true) ? $request->category : null;
         $query = DB::table('chart_of_accounts')
             ->leftJoin('account_types', 'chart_of_accounts.account_type_id', '=', 'account_types.id')
             ->where('chart_of_accounts.account_id', $accountId)
@@ -39,6 +40,9 @@ class ChartOfAccountController extends Controller
             );
         if ($activeOnly) {
             $query->where('chart_of_accounts.is_active', true);
+        }
+        if ($category !== null) {
+            $query->where('account_types.category', $category);
         }
         $rows = $query->get();
 
