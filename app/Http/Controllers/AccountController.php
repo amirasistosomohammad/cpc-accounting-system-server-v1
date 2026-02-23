@@ -100,13 +100,29 @@ class AccountController extends Controller
 
         $request->user()->accounts()->attach($account->id);
 
-        // Assign the new business account to all active personnel so it appears in their topbar dropdown
-        Personnel::where('is_active', true)->each(function (Personnel $p) use ($account) {
-            $p->accounts()->syncWithoutDetaching([$account->id]);
+        // Return 201 immediately to avoid 504 (gateway timeout → no CORS header → "CORS error").
+        // Defer heavy work to after response is sent.
+        $accountId = $account->id;
+        app()->terminating(function () use ($accountId) {
+            $account = Account::find($accountId);
+            if (!$account) {
+                return;
+            }
+            // Assign new account to all active personnel
+            $personnelIds = Personnel::where('is_active', true)->pluck('id');
+            $now = now();
+            $rows = $personnelIds->map(fn ($id) => [
+                'account_id' => $accountId,
+                'user_type' => Personnel::class,
+                'user_id' => $id,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ])->toArray();
+            if (!empty($rows)) {
+                DB::table('account_user')->insertOrIgnore($rows);
+            }
+            $this->cloneDefaultStructureToNewAccount($account);
         });
-
-        // Clone default account types and chart of accounts from the first business account (same as seeder)
-        $this->cloneDefaultStructureToNewAccount($account);
 
         return response()->json([
             'success' => true,
@@ -123,7 +139,7 @@ class AccountController extends Controller
 
     /**
      * Clone account types and chart of accounts from the default (first) business account to a new account.
-     * Data is independent per business account; admin can edit/delete/modify COA and types per account anytime.
+     * Uses bulk inserts so it runs fast when invoked from terminating callback.
      */
     private function cloneDefaultStructureToNewAccount(Account $newAccount): void
     {
@@ -141,29 +157,44 @@ class AccountController extends Controller
             return;
         }
 
+        $now = now();
+        $typeRows = $templateTypes->map(fn ($t) => [
+            'account_id' => $newAccount->id,
+            'code' => $t->code,
+            'name' => $t->name,
+            'normal_balance' => $t->normal_balance,
+            'category' => $t->category,
+            'color' => $t->color,
+            'icon' => $t->icon,
+            'display_order' => $t->display_order,
+            'is_active' => $t->is_active,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ])->toArray();
+
+        AccountType::insert($typeRows);
+
+        $newTypes = AccountType::where('account_id', $newAccount->id)
+            ->orderBy('display_order')
+            ->orderBy('id')
+            ->get();
         $typeIdMap = [];
-        foreach ($templateTypes as $t) {
-            $newType = AccountType::create([
-                'account_id' => $newAccount->id,
-                'code' => $t->code,
-                'name' => $t->name,
-                'normal_balance' => $t->normal_balance,
-                'category' => $t->category,
-                'color' => $t->color,
-                'icon' => $t->icon,
-                'display_order' => $t->display_order,
-                'is_active' => $t->is_active,
-            ]);
-            $typeIdMap[$t->id] = $newType->id;
+        foreach ($templateTypes as $i => $t) {
+            $typeIdMap[$t->id] = $newTypes[$i]->id ?? null;
         }
 
         $templateCoas = ChartOfAccount::where('account_id', $templateAccount->id)->orderBy('account_code')->get();
+        if ($templateCoas->isEmpty()) {
+            return;
+        }
+
+        $coaRows = [];
         foreach ($templateCoas as $coa) {
             $newTypeId = $typeIdMap[$coa->account_type_id] ?? null;
             if ($newTypeId === null) {
                 continue;
             }
-            ChartOfAccount::create([
+            $coaRows[] = [
                 'account_id' => $newAccount->id,
                 'account_type_id' => $newTypeId,
                 'account_code' => $coa->account_code,
@@ -171,7 +202,12 @@ class AccountController extends Controller
                 'normal_balance' => $coa->normal_balance,
                 'description' => $coa->description,
                 'is_active' => $coa->is_active,
-            ]);
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+        if (!empty($coaRows)) {
+            ChartOfAccount::insert($coaRows);
         }
     }
 
