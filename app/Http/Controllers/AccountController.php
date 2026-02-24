@@ -100,29 +100,22 @@ class AccountController extends Controller
 
         $request->user()->accounts()->attach($account->id);
 
-        // Return 201 immediately to avoid 504 (gateway timeout → no CORS header → "CORS error").
-        // Defer heavy work to after response is sent.
-        $accountId = $account->id;
-        app()->terminating(function () use ($accountId) {
-            $account = Account::find($accountId);
-            if (!$account) {
-                return;
-            }
-            // Assign new account to all active personnel
-            $personnelIds = Personnel::where('is_active', true)->pluck('id');
-            $now = now();
-            $rows = $personnelIds->map(fn ($id) => [
-                'account_id' => $accountId,
-                'user_type' => Personnel::class,
-                'user_id' => $id,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ])->toArray();
-            if (!empty($rows)) {
-                DB::table('account_user')->insertOrIgnore($rows);
-            }
-            $this->cloneDefaultStructureToNewAccount($account);
-        });
+        // Assign new account to all active personnel (bulk insert so it stays fast).
+        $personnelIds = Personnel::where('is_active', true)->pluck('id');
+        $now = now();
+        $rows = $personnelIds->map(fn ($id) => [
+            'account_id' => $account->id,
+            'user_type' => Personnel::class,
+            'user_id' => $id,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ])->toArray();
+        if (!empty($rows)) {
+            DB::table('account_user')->insertOrIgnore($rows);
+        }
+
+        // Clone default account types and COA so new business always has them (bulk inserts = fast).
+        $this->cloneDefaultStructureToNewAccount($account);
 
         return response()->json([
             'success' => true,
@@ -139,7 +132,7 @@ class AccountController extends Controller
 
     /**
      * Clone account types and chart of accounts from the default (first) business account to a new account.
-     * Uses bulk inserts so it runs fast when invoked from terminating callback.
+     * Uses bulk inserts so it runs fast and avoids 504. Always run inline so defaults are created every time.
      */
     private function cloneDefaultStructureToNewAccount(Account $newAccount): void
     {

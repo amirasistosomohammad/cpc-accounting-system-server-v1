@@ -24,6 +24,19 @@ Route::get('/personnel-avatar/{filename}', function ($filename) {
     return response()->file($path);
 })->name('personnel.avatar');
 
+// Public account logo route (same pattern as DATravelApp image handling: serve via API so URL is always HTTPS and same-origin)
+Route::get('/account-logo/{filename}', function ($filename) {
+    $filename = basename($filename);
+    if (!preg_match('/^[a-zA-Z0-9._-]+$/', $filename)) {
+        abort(404);
+    }
+    $path = storage_path('app/public/account-logos/' . $filename);
+    if (!file_exists($path)) {
+        abort(404);
+    }
+    return response()->file($path);
+})->name('account.logo');
+
 // Protected routes - using custom Sanctum authentication + account context
 Route::middleware([
     \App\Http\Middleware\SanctumAuthenticate::class,

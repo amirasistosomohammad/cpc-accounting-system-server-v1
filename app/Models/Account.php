@@ -22,6 +22,7 @@ class Account extends Model
 
     /**
      * Return logo as full URL when stored as path; otherwise return as-is (base64 or null).
+     * Served via /api/account-logo/{filename} so URL is always same-origin HTTPS (like DATravelApp image handling).
      */
     public function getLogoUrl(): ?string
     {
@@ -32,10 +33,12 @@ class Account extends Model
         if (str_starts_with($logo, 'data:')) {
             return $logo;
         }
-        // Always serve logo over HTTPS to avoid mixed-content warnings in production.
-        return Storage::disk('public')->exists($logo)
-            ? secure_asset('storage/' . $logo)
-            : null;
+        $path = $logo;
+        $filename = basename($path);
+        if ($filename === '' || !Storage::disk('public')->exists($path)) {
+            return null;
+        }
+        return rtrim(config('app.url'), '/') . '/api/account-logo/' . $filename;
     }
 
     public function admins()
