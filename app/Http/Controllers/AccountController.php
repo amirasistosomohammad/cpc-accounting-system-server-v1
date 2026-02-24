@@ -130,77 +130,200 @@ class AccountController extends Controller
         ], 201);
     }
 
-    /**
-     * Clone account types and chart of accounts from the default (first) business account to a new account.
-     * Uses bulk inserts so it runs fast and avoids 504. Always run inline so defaults are created every time.
-     */
-    private function cloneDefaultStructureToNewAccount(Account $newAccount): void
+    /** Built-in default account types (same as AccountTypeSeeder). Used when no template account has data. */
+    private static function getBuiltInAccountTypes(): array
     {
-        $templateAccount = Account::orderBy('id')->first();
-        if (!$templateAccount || $templateAccount->id === $newAccount->id) {
-            return;
-        }
+        return [
+            ['code' => 'ASSETS', 'name' => 'Assets', 'normal_balance' => 'DR', 'category' => 'asset', 'color' => '#28a745', 'icon' => 'FaWallet', 'display_order' => 1],
+            ['code' => 'LIABILITIES', 'name' => 'Liabilities', 'normal_balance' => 'CR', 'category' => 'liability', 'color' => '#ffc107', 'icon' => 'FaFileInvoice', 'display_order' => 2],
+            ['code' => 'EQUITY', 'name' => 'Equity', 'normal_balance' => 'CR', 'category' => 'equity', 'color' => '#17a2b8', 'icon' => 'FaBalanceScale', 'display_order' => 3],
+            ['code' => 'REVENUE', 'name' => 'Revenue', 'normal_balance' => 'CR', 'category' => 'revenue', 'color' => '#007bff', 'icon' => 'FaArrowUp', 'display_order' => 4],
+            ['code' => 'COST_OF_SERVICES', 'name' => 'Cost of Services', 'normal_balance' => 'DR', 'category' => 'expense', 'color' => '#dc3545', 'icon' => 'FaArrowDown', 'display_order' => 5],
+            ['code' => 'OPERATING_EXPENSES', 'name' => 'Operating Expenses', 'normal_balance' => 'DR', 'category' => 'expense', 'color' => '#dc3545', 'icon' => 'FaArrowDown', 'display_order' => 6],
+        ];
+    }
 
-        $templateTypes = AccountType::where('account_id', $templateAccount->id)
-            ->orderBy('display_order')
-            ->orderBy('id')
-            ->get();
+    /** Built-in default chart of accounts (same as ChartOfAccountSeeder). */
+    private static function getBuiltInChartOfAccounts(): array
+    {
+        return [
+            ['account_code' => '1010', 'account_name' => 'Cash on Hand', 'account_type_code' => 'ASSETS', 'normal_balance' => 'DR'],
+            ['account_code' => '1020', 'account_name' => 'Cash in Bank', 'account_type_code' => 'ASSETS', 'normal_balance' => 'DR'],
+            ['account_code' => '1030', 'account_name' => 'Petty Cash Fund', 'account_type_code' => 'ASSETS', 'normal_balance' => 'DR'],
+            ['account_code' => '1040', 'account_name' => 'Accounts Receivable - Clients', 'account_type_code' => 'ASSETS', 'normal_balance' => 'DR'],
+            ['account_code' => '1050', 'account_name' => 'Commission Receivable', 'account_type_code' => 'ASSETS', 'normal_balance' => 'DR'],
+            ['account_code' => '1060', 'account_name' => 'Advances to Suppliers', 'account_type_code' => 'ASSETS', 'normal_balance' => 'DR'],
+            ['account_code' => '1070', 'account_name' => 'Prepaid Expenses', 'account_type_code' => 'ASSETS', 'normal_balance' => 'DR'],
+            ['account_code' => '1210', 'account_name' => 'Office Equipment', 'account_type_code' => 'ASSETS', 'normal_balance' => 'DR'],
+            ['account_code' => '1220', 'account_name' => 'Furniture & Fixtures', 'account_type_code' => 'ASSETS', 'normal_balance' => 'DR'],
+            ['account_code' => '1230', 'account_name' => 'Computer & IT Equipment', 'account_type_code' => 'ASSETS', 'normal_balance' => 'DR'],
+            ['account_code' => '1240', 'account_name' => 'Accumulated Depreciation', 'account_type_code' => 'ASSETS', 'normal_balance' => 'CR'],
+            ['account_code' => '1250', 'account_name' => 'Software & Licenses', 'account_type_code' => 'ASSETS', 'normal_balance' => 'DR'],
+            ['account_code' => '2010', 'account_name' => 'Accounts Payable', 'account_type_code' => 'LIABILITIES', 'normal_balance' => 'CR'],
+            ['account_code' => '2020', 'account_name' => 'Accrued Expenses', 'account_type_code' => 'LIABILITIES', 'normal_balance' => 'CR'],
+            ['account_code' => '2030', 'account_name' => 'Taxes Payable', 'account_type_code' => 'LIABILITIES', 'normal_balance' => 'CR'],
+            ['account_code' => '2040', 'account_name' => 'Withholding Tax Payable', 'account_type_code' => 'LIABILITIES', 'normal_balance' => 'CR'],
+            ['account_code' => '2050', 'account_name' => 'Advances from Clients', 'account_type_code' => 'LIABILITIES', 'normal_balance' => 'CR'],
+            ['account_code' => '2060', 'account_name' => 'Commission Payable', 'account_type_code' => 'LIABILITIES', 'normal_balance' => 'CR'],
+            ['account_code' => '2210', 'account_name' => 'Bank Loan Payable', 'account_type_code' => 'LIABILITIES', 'normal_balance' => 'CR'],
+            ['account_code' => '2220', 'account_name' => 'Loans Payable - Officers', 'account_type_code' => 'LIABILITIES', 'normal_balance' => 'CR'],
+            ['account_code' => '3010', 'account_name' => "Owner's Capital/Paid-In Capital", 'account_type_code' => 'EQUITY', 'normal_balance' => 'CR'],
+            ['account_code' => '3020', 'account_name' => 'Additional Paid-In Capital', 'account_type_code' => 'EQUITY', 'normal_balance' => 'CR'],
+            ['account_code' => '3030', 'account_name' => 'Retained Earnings', 'account_type_code' => 'EQUITY', 'normal_balance' => 'CR'],
+            ['account_code' => '3040', 'account_name' => 'Current Year Net Income', 'account_type_code' => 'EQUITY', 'normal_balance' => 'CR'],
+            ['account_code' => '3050', 'account_name' => "Owner's Drawings", 'account_type_code' => 'EQUITY', 'normal_balance' => 'DR'],
+            ['account_code' => '4010', 'account_name' => 'Marketing Consultancy Income', 'account_type_code' => 'REVENUE', 'normal_balance' => 'CR'],
+            ['account_code' => '4020', 'account_name' => 'Real Estate Commission Income', 'account_type_code' => 'REVENUE', 'normal_balance' => 'CR'],
+            ['account_code' => '4030', 'account_name' => 'Construction Referral Income', 'account_type_code' => 'REVENUE', 'normal_balance' => 'CR'],
+            ['account_code' => '4040', 'account_name' => 'Memorial Lot Commission Income', 'account_type_code' => 'REVENUE', 'normal_balance' => 'CR'],
+            ['account_code' => '4050', 'account_name' => 'Food Business Commission Income', 'account_type_code' => 'REVENUE', 'normal_balance' => 'CR'],
+            ['account_code' => '4060', 'account_name' => 'Rental/Service Commission Income', 'account_type_code' => 'REVENUE', 'normal_balance' => 'CR'],
+            ['account_code' => '4070', 'account_name' => 'Other Service Income', 'account_type_code' => 'REVENUE', 'normal_balance' => 'CR'],
+            ['account_code' => '5010', 'account_name' => 'Consultant Fees', 'account_type_code' => 'COST_OF_SERVICES', 'normal_balance' => 'DR'],
+            ['account_code' => '5020', 'account_name' => 'Agent Commission Expense', 'account_type_code' => 'COST_OF_SERVICES', 'normal_balance' => 'DR'],
+            ['account_code' => '5030', 'account_name' => 'Project-Based Labor', 'account_type_code' => 'COST_OF_SERVICES', 'normal_balance' => 'DR'],
+            ['account_code' => '5040', 'account_name' => 'Outsourced Services', 'account_type_code' => 'COST_OF_SERVICES', 'normal_balance' => 'DR'],
+            ['account_code' => '6010', 'account_name' => 'Salaries & Wages', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6020', 'account_name' => 'Professional Fees', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6030', 'account_name' => 'Office Supplies Expense', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6040', 'account_name' => 'Transportation & Travel', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6050', 'account_name' => 'Representation Expense', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6110', 'account_name' => 'Advertising & Promotions', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6120', 'account_name' => 'Social Media Marketing', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6130', 'account_name' => 'Printing & Flyers', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6210', 'account_name' => 'Utilities Expense', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6220', 'account_name' => 'Rent Expense', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6230', 'account_name' => 'Communication Expense', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6240', 'account_name' => 'Internet & Software Subscription', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6250', 'account_name' => 'Repairs & Maintenance', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6260', 'account_name' => 'Depreciation Expense', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '6270', 'account_name' => 'Miscellaneous Expense', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '7010', 'account_name' => 'Interest Income', 'account_type_code' => 'REVENUE', 'normal_balance' => 'CR'],
+            ['account_code' => '7020', 'account_name' => 'Other Income', 'account_type_code' => 'REVENUE', 'normal_balance' => 'CR'],
+            ['account_code' => '7030', 'account_name' => 'Interest Expense', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+            ['account_code' => '7040', 'account_name' => 'Bank Charges', 'account_type_code' => 'OPERATING_EXPENSES', 'normal_balance' => 'DR'],
+        ];
+    }
 
-        if ($templateTypes->isEmpty()) {
-            return;
-        }
-
+    /**
+     * Seed account types and COA from built-in defaults. Used when no template account has data.
+     */
+    private function seedDefaultStructureFromBuiltIn(Account $newAccount): void
+    {
         $now = now();
-        $typeRows = $templateTypes->map(fn ($t) => [
-            'account_id' => $newAccount->id,
-            'code' => $t->code,
-            'name' => $t->name,
-            'normal_balance' => $t->normal_balance,
-            'category' => $t->category,
-            'color' => $t->color,
-            'icon' => $t->icon,
-            'display_order' => $t->display_order,
-            'is_active' => $t->is_active,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ])->toArray();
+        $accountId = $newAccount->id;
 
+        $typeRows = [];
+        foreach (self::getBuiltInAccountTypes() as $t) {
+            $typeRows[] = [
+                'account_id' => $accountId,
+                'code' => $t['code'],
+                'name' => $t['name'],
+                'normal_balance' => $t['normal_balance'],
+                'category' => $t['category'],
+                'color' => $t['color'],
+                'icon' => $t['icon'],
+                'display_order' => $t['display_order'],
+                'is_active' => true,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
         AccountType::insert($typeRows);
 
-        $newTypes = AccountType::where('account_id', $newAccount->id)
-            ->orderBy('display_order')
-            ->orderBy('id')
-            ->get();
-        $typeIdMap = [];
-        foreach ($templateTypes as $i => $t) {
-            $typeIdMap[$t->id] = $newTypes[$i]->id ?? null;
-        }
-
-        $templateCoas = ChartOfAccount::where('account_id', $templateAccount->id)->orderBy('account_code')->get();
-        if ($templateCoas->isEmpty()) {
-            return;
-        }
-
+        $newTypes = AccountType::where('account_id', $accountId)->orderBy('display_order')->orderBy('id')->get()->keyBy('code');
         $coaRows = [];
-        foreach ($templateCoas as $coa) {
-            $newTypeId = $typeIdMap[$coa->account_type_id] ?? null;
-            if ($newTypeId === null) {
+        foreach (self::getBuiltInChartOfAccounts() as $row) {
+            $type = $newTypes->get($row['account_type_code']);
+            if (!$type) {
                 continue;
             }
             $coaRows[] = [
-                'account_id' => $newAccount->id,
-                'account_type_id' => $newTypeId,
-                'account_code' => $coa->account_code,
-                'account_name' => $coa->account_name,
-                'normal_balance' => $coa->normal_balance,
-                'description' => $coa->description,
-                'is_active' => $coa->is_active,
+                'account_id' => $accountId,
+                'account_type_id' => $type->id,
+                'account_code' => $row['account_code'],
+                'account_name' => $row['account_name'],
+                'normal_balance' => $row['normal_balance'],
+                'description' => null,
+                'is_active' => true,
                 'created_at' => $now,
                 'updated_at' => $now,
             ];
         }
         if (!empty($coaRows)) {
             ChartOfAccount::insert($coaRows);
+        }
+    }
+
+    /**
+     * Clone account types and chart of accounts from the default (first) business account to a new account.
+     * If no template or template has no types/COA, seeds from built-in defaults so every new business always has a COA.
+     */
+    private function cloneDefaultStructureToNewAccount(Account $newAccount): void
+    {
+        $templateAccount = Account::orderBy('id')->first();
+        $useBuiltIn = true;
+
+        if ($templateAccount && $templateAccount->id !== $newAccount->id) {
+            $templateTypes = AccountType::where('account_id', $templateAccount->id)
+                ->orderBy('display_order')
+                ->orderBy('id')
+                ->get();
+            $templateCoas = ChartOfAccount::where('account_id', $templateAccount->id)->orderBy('account_code')->get();
+
+            if ($templateTypes->isNotEmpty() && $templateCoas->isNotEmpty()) {
+                $useBuiltIn = false;
+                $now = now();
+                $typeRows = $templateTypes->map(fn ($t) => [
+                    'account_id' => $newAccount->id,
+                    'code' => $t->code,
+                    'name' => $t->name,
+                    'normal_balance' => $t->normal_balance,
+                    'category' => $t->category,
+                    'color' => $t->color,
+                    'icon' => $t->icon,
+                    'display_order' => $t->display_order,
+                    'is_active' => $t->is_active,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ])->toArray();
+                AccountType::insert($typeRows);
+
+                $newTypes = AccountType::where('account_id', $newAccount->id)
+                    ->orderBy('display_order')
+                    ->orderBy('id')
+                    ->get();
+                $typeIdMap = [];
+                foreach ($templateTypes as $i => $t) {
+                    $typeIdMap[$t->id] = $newTypes[$i]->id ?? null;
+                }
+
+                $coaRows = [];
+                foreach ($templateCoas as $coa) {
+                    $newTypeId = $typeIdMap[$coa->account_type_id] ?? null;
+                    if ($newTypeId === null) {
+                        continue;
+                    }
+                    $coaRows[] = [
+                        'account_id' => $newAccount->id,
+                        'account_type_id' => $newTypeId,
+                        'account_code' => $coa->account_code,
+                        'account_name' => $coa->account_name,
+                        'normal_balance' => $coa->normal_balance,
+                        'description' => $coa->description,
+                        'is_active' => $coa->is_active,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ];
+                }
+                if (!empty($coaRows)) {
+                    ChartOfAccount::insert($coaRows);
+                }
+            }
+        }
+
+        if ($useBuiltIn) {
+            $this->seedDefaultStructureFromBuiltIn($newAccount);
         }
     }
 

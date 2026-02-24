@@ -38,7 +38,15 @@ class Account extends Model
         if ($filename === '' || !Storage::disk('public')->exists($path)) {
             return null;
         }
-        return rtrim(config('app.url'), '/') . '/api/account-logo/' . $filename;
+        // Use request host when available so production returns HTTPS (avoids mixed content when client is on HTTPS).
+        $baseUrl = null;
+        if (app()->has('request') && request()) {
+            $baseUrl = request()->getSchemeAndHttpHost();
+        }
+        if (!$baseUrl || $baseUrl === 'http://' || $baseUrl === 'https://') {
+            $baseUrl = rtrim(config('app.url'), '/');
+        }
+        return $baseUrl . '/api/account-logo/' . $filename;
     }
 
     public function admins()
