@@ -32,8 +32,9 @@ class Account extends Model
         if (str_starts_with($logo, 'data:')) {
             return $logo;
         }
+        // Always serve logo over HTTPS to avoid mixed-content warnings in production.
         return Storage::disk('public')->exists($logo)
-            ? asset('storage/' . $logo)
+            ? secure_asset('storage/' . $logo)
             : null;
     }
 
