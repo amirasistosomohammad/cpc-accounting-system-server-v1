@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\AccountType;
+use App\Models\ChartOfAccount;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -162,6 +163,11 @@ class AccountTypeController extends Controller
         }
 
         $accountType->update($data);
+
+        // Cascade normal_balance to all chart-of-accounts using this type so the COA table reflects the change.
+        if (array_key_exists('normal_balance', $data)) {
+            ChartOfAccount::where('account_type_id', $accountType->id)->update(['normal_balance' => $data['normal_balance']]);
+        }
 
         return response()->json([
             'success' => true,

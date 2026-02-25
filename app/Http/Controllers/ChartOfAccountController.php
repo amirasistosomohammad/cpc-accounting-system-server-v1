@@ -45,9 +45,27 @@ class ChartOfAccountController extends Controller
             $query->where('account_types.category', $category);
         }
         $rows = $query->get();
+        $coaIds = $rows->pluck('id')->all();
+
+        // Compute balances from journal_entry_lines so COA table reflects transactions (same logic as index()).
+        $balances = [];
+        if (!empty($coaIds)) {
+            $balanceRows = DB::table('journal_entry_lines')
+                ->selectRaw('account_id, COALESCE(SUM(debit_amount),0) as debits, COALESCE(SUM(credit_amount),0) as credits')
+                ->whereIn('account_id', $coaIds)
+                ->groupBy('account_id')
+                ->get();
+            foreach ($balanceRows as $br) {
+                $balances[(int) $br->account_id] = [(float) $br->debits, (float) $br->credits];
+            }
+        }
 
         $list = [];
         foreach ($rows as $row) {
+            $d = $balances[(int) $row->id][0] ?? 0;
+            $c = $balances[(int) $row->id][1] ?? 0;
+            $balance = $row->normal_balance === 'DR' ? $d - $c : $c - $d;
+
             $list[] = [
                 'id' => (int) $row->id,
                 'account_code' => $row->account_code,
@@ -56,7 +74,7 @@ class ChartOfAccountController extends Controller
                 'normal_balance' => $row->normal_balance,
                 'is_active' => (bool) $row->is_active,
                 'description' => $row->description,
-                'balance' => 0,
+                'balance' => $balance,
                 'account_type' => $row->account_type,
                 'account_type_category' => $row->account_type_category,
             ];
