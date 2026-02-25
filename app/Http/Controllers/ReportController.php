@@ -36,14 +36,18 @@ class ReportController extends Controller
 
         $data = $accounts->map(function ($account) use ($balancesById) {
             [$debits, $credits] = $balancesById[$account->id] ?? [0, 0];
-            $balance = $account->normal_balance === 'DR'
-                ? $debits - $credits
-                : $credits - $debits;
-            // Trial Balance convention: show net debit or net credit per account,
-            // regardless of the account's normal balance. Positive balances go to
-            // the Debit column; negative balances to the Credit column.
-            $debitBalance = $balance > 0 ? $balance : 0;
-            $creditBalance = $balance < 0 ? -$balance : 0;
+            // For Trial Balance, we want net DR/CR based purely on totals:
+            // if debits > credits → net debit; if credits > debits → net credit.
+            $debitBalance = 0;
+            $creditBalance = 0;
+            if ($debits > $credits) {
+                $debitBalance = $debits - $credits;
+            } elseif ($credits > $debits) {
+                $creditBalance = $credits - $debits;
+            }
+            // Keep a signed balance for other uses (DR positive, CR negative),
+            // but DO NOT use this to decide which column to show in the TB.
+            $balance = $debitBalance - $creditBalance;
             return [
                 'account_code' => $account->account_code,
                 'account_name' => $account->account_name,
