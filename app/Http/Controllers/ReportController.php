@@ -39,6 +39,11 @@ class ReportController extends Controller
             $balance = $account->normal_balance === 'DR'
                 ? $debits - $credits
                 : $credits - $debits;
+            // Trial Balance convention: show net debit or net credit per account,
+            // regardless of the account's normal balance. Positive balances go to
+            // the Debit column; negative balances to the Credit column.
+            $debitBalance = $balance > 0 ? $balance : 0;
+            $creditBalance = $balance < 0 ? -$balance : 0;
             return [
                 'account_code' => $account->account_code,
                 'account_name' => $account->account_name,
@@ -46,8 +51,8 @@ class ReportController extends Controller
                 'debits' => round($debits, 2),
                 'credits' => round($credits, 2),
                 'balance' => round($balance, 2),
-                'debit_balance' => $balance > 0 && $account->normal_balance === 'DR' ? $balance : 0,
-                'credit_balance' => $balance > 0 && $account->normal_balance === 'CR' ? $balance : 0,
+                'debit_balance' => round($debitBalance, 2),
+                'credit_balance' => round($creditBalance, 2),
             ];
         });
 
