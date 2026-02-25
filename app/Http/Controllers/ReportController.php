@@ -17,12 +17,22 @@ class ReportController extends Controller
      */
     public function trialBalance(Request $request): JsonResponse
     {
+        $accountId = $request->attributes->get('current_account_id');
+        if ($accountId === null || $accountId === '') {
+            return response()->json([
+                'message' => 'Account context required. Please select a business account.',
+            ], 422);
+        }
+
         $startDate = $request->get('start_date');
         $endDate = $request->get('end_date');
 
-        $accounts = ChartOfAccount::with('accountType')->orderBy('account_code')->get();
+        $accounts = ChartOfAccount::with('accountType')
+            ->where('account_id', $accountId)
+            ->orderBy('account_code')
+            ->get();
         $accountIds = $accounts->pluck('id')->all();
-        $balancesById = $this->balancesByAccountIdAndDateRange($accountIds, $startDate, $endDate);
+        $balancesById = $this->balancesByAccountIdAndDateRange($accountIds, $startDate, $endDate, $accountId);
 
         $data = $accounts->map(function ($account) use ($balancesById) {
             [$debits, $credits] = $balancesById[$account->id] ?? [0, 0];
@@ -54,6 +64,13 @@ class ReportController extends Controller
      */
     public function incomeStatement(Request $request): JsonResponse
     {
+        $accountId = $request->attributes->get('current_account_id');
+        if ($accountId === null || $accountId === '') {
+            return response()->json([
+                'message' => 'Account context required. Please select a business account.',
+            ], 422);
+        }
+
         $startDate = $request->get('start_date');
         $endDate = $request->get('end_date');
 
@@ -68,6 +85,7 @@ class ReportController extends Controller
         }
 
         $accounts = ChartOfAccount::with('accountType')
+            ->where('account_id', $accountId)
             ->whereHas('accountType', function ($q) use ($categories) {
                 $q->whereIn('category', $categories);
             })
@@ -75,7 +93,7 @@ class ReportController extends Controller
             ->get();
 
         $accountIds = $accounts->pluck('id')->all();
-        $balancesById = $this->balancesByAccountIdAndDateRange($accountIds, $startDate, $endDate);
+        $balancesById = $this->balancesByAccountIdAndDateRange($accountIds, $startDate, $endDate, $accountId);
         $lines = [];
 
         foreach ($accounts as $account) {
@@ -116,6 +134,13 @@ class ReportController extends Controller
      */
     public function balanceSheet(Request $request): JsonResponse
     {
+        $accountId = $request->attributes->get('current_account_id');
+        if ($accountId === null || $accountId === '') {
+            return response()->json([
+                'message' => 'Account context required. Please select a business account.',
+            ], 422);
+        }
+
         $endDate = $request->get('end_date');
         $startDate = $request->get('start_date');
 
@@ -131,6 +156,7 @@ class ReportController extends Controller
         }
 
         $accounts = ChartOfAccount::with('accountType')
+            ->where('account_id', $accountId)
             ->whereHas('accountType', function ($q) use ($categories) {
                 $q->whereIn('category', $categories);
             })
@@ -138,7 +164,7 @@ class ReportController extends Controller
             ->get();
 
         $accountIds = $accounts->pluck('id')->all();
-        $balancesById = $this->balancesByAccountIdAndDateRange($accountIds, $startDate, $endDate);
+        $balancesById = $this->balancesByAccountIdAndDateRange($accountIds, $startDate, $endDate, $accountId);
 
         $lines = [];
         foreach ($accounts as $account) {
@@ -157,7 +183,7 @@ class ReportController extends Controller
             $sections[$category]['total'] += $balance;
         }
 
-        $pnl = $this->computeNetIncome($startDate, $endDate);
+        $pnl = $this->computeNetIncome($startDate, $endDate, $accountId);
         $sections[AccountType::CATEGORY_EQUITY]['total'] += $pnl;
 
         return response()->json([
@@ -176,9 +202,9 @@ class ReportController extends Controller
     }
 
     /**
-     * One query: account_id => [sum(debits), sum(credits)] for given account IDs and optional date range.
+     * One query: account_id => [sum(debits), sum(credits)] for given account IDs and optional date range, scoped to a business account.
      */
-    private function balancesByAccountIdAndDateRange(array $accountIds, $startDate, $endDate): array
+    private function balancesByAccountIdAndDateRange(array $accountIds, $startDate, $endDate, $accountId = null): array
     {
         if (empty($accountIds)) {
             return [];
@@ -188,6 +214,9 @@ class ReportController extends Controller
             ->whereIn('journal_entry_lines.account_id', $accountIds)
             ->selectRaw('journal_entry_lines.account_id, COALESCE(SUM(journal_entry_lines.debit_amount),0) as debits, COALESCE(SUM(journal_entry_lines.credit_amount),0) as credits')
             ->groupBy('journal_entry_lines.account_id');
+        if ($accountId !== null && $accountId !== '') {
+            $q->where('journal_entries.account_id', $accountId);
+        }
         if ($startDate) {
             $q->where('journal_entries.entry_date', '>=', $startDate);
         }
@@ -202,11 +231,12 @@ class ReportController extends Controller
     }
 
     /**
-     * Helper: Compute Net Income for a date range. One bulk query for balances.
+     * Helper: Compute Net Income for a date range, scoped to a business account. One bulk query for balances.
      */
-    private function computeNetIncome($startDate, $endDate): float
+    private function computeNetIncome($startDate, $endDate, $accountId): float
     {
         $accounts = ChartOfAccount::with('accountType')
+            ->where('account_id', $accountId)
             ->whereHas('accountType', function ($q) {
                 $q->whereIn('category', [
                     AccountType::CATEGORY_REVENUE,
@@ -216,7 +246,7 @@ class ReportController extends Controller
             ->get();
 
         $accountIds = $accounts->pluck('id')->all();
-        $balancesById = $this->balancesByAccountIdAndDateRange($accountIds, $startDate, $endDate);
+        $balancesById = $this->balancesByAccountIdAndDateRange($accountIds, $startDate, $endDate, $accountId);
 
         $net = 0;
         foreach ($accounts as $account) {

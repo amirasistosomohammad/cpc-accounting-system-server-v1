@@ -21,7 +21,13 @@ class JournalEntryController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
+        $accountId = $request->attributes->get('current_account_id');
+
         $query = JournalEntry::with('lines.account.accountType');
+
+        if ($accountId !== null && $accountId !== '') {
+            $query->where('account_id', $accountId);
+        }
 
         // Filter by date range
         if ($request->has('start_date')) {
@@ -76,6 +82,11 @@ class JournalEntryController extends Controller
     public function store(Request $request): JsonResponse
     {
         $accountId = $request->attributes->get('current_account_id');
+        if ($accountId === null || $accountId === '') {
+            return response()->json([
+                'message' => 'Account context required. Please select a business account.',
+            ], 422);
+        }
         $validated = $request->validate([
             'entry_date' => 'required|date',
             'description' => 'required|string',
@@ -118,6 +129,7 @@ class JournalEntryController extends Controller
             $actor = ActivityLogService::getUserTypeAndId($request->user());
             // Create journal entry
             $entry = JournalEntry::create([
+                'account_id' => $accountId,
                 'entry_number' => JournalEntry::generateEntryNumber(),
                 'entry_date' => $validated['entry_date'],
                 'description' => $validated['description'],
