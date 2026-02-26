@@ -23,7 +23,10 @@ class JournalEntryController extends Controller
     {
         $accountId = $request->attributes->get('current_account_id');
 
-        $query = JournalEntry::with('lines.account.accountType');
+        // For the listing view we only need the journal entry header plus totals.
+        // Lines (and their accounts) are loaded on-demand via the show() endpoint
+        // when viewing or editing a specific entry.
+        $query = JournalEntry::query();
 
         if ($accountId !== null && $accountId !== '') {
             $query->where('account_id', $accountId);
