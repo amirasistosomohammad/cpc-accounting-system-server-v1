@@ -5,6 +5,9 @@ namespace App\Http\Controllers;
 use App\Models\Admin;
 use App\Models\JournalEntry;
 use App\Models\JournalEntryLine;
+use App\Models\Invoice;
+use App\Models\Bill;
+use App\Models\Payment;
 use App\Services\ActivityLogService;
 use App\Services\AuthorizationCodeService;
 use Illuminate\Http\Request;
@@ -55,8 +58,59 @@ class JournalEntryController extends Controller
             ->orderBy('id', 'desc')
             ->paginate($request->get('per_page', 15));
 
-        // Keep index lightweight: no per-entry footprint/source lookups here.
-        // Detailed metadata is loaded on-demand via show() when viewing/editing.
+        // Efficiently attach footprint + source_document using batched lookups
+        $entryIds = $entries->pluck('id')->all();
+
+        if (!empty($entryIds)) {
+            // Batch load related source documents instead of per-entry queries
+            $invoices = Invoice::whereIn('journal_entry_id', $entryIds)
+                ->get(['id', 'journal_entry_id', 'invoice_number'])
+                ->keyBy('journal_entry_id');
+
+            $payments = Payment::whereIn('journal_entry_id', $entryIds)
+                ->get(['id', 'journal_entry_id', 'payment_number'])
+                ->keyBy('journal_entry_id');
+
+            $bills = Bill::whereIn('journal_entry_id', $entryIds)
+                ->get(['id', 'journal_entry_id', 'bill_number'])
+                ->keyBy('journal_entry_id');
+
+            $entries->getCollection()->transform(function ($entry) use ($invoices, $payments, $bills) {
+                $entry->created_by_name = ActivityLogService::resolveNameFromTypeId($entry->created_by_type, $entry->created_by);
+                $entry->updated_by_name = ActivityLogService::resolveNameFromTypeId($entry->updated_by_type, $entry->updated_by_id);
+
+                $source = null;
+                if ($invoices->has($entry->id)) {
+                    $inv = $invoices->get($entry->id);
+                    $source = [
+                        'type' => 'invoice',
+                        'reference' => $inv->invoice_number,
+                        'id' => $inv->id,
+                        'edit_hint' => 'Edit or void from Clients / AR (Invoices tab).',
+                    ];
+                } elseif ($payments->has($entry->id)) {
+                    $pay = $payments->get($entry->id);
+                    $source = [
+                        'type' => 'payment',
+                        'reference' => $pay->payment_number,
+                        'id' => $pay->id,
+                        'edit_hint' => 'Void from Clients / AR or Cash & Bank.',
+                    ];
+                } elseif ($bills->has($entry->id)) {
+                    $bill = $bills->get($entry->id);
+                    $source = [
+                        'type' => 'bill',
+                        'reference' => $bill->bill_number,
+                        'id' => $bill->id,
+                        'edit_hint' => 'Edit or void from Suppliers / AP.',
+                    ];
+                }
+
+                $entry->source_document = $source;
+                return $entry;
+            });
+        }
+
         return response()->json($entries);
     }
 
