@@ -55,14 +55,8 @@ class JournalEntryController extends Controller
             ->orderBy('id', 'desc')
             ->paginate($request->get('per_page', 15));
 
-        // Append footprint and source_document (lock edit/delete when JE is from invoice, payment, or bill)
-        $entries->getCollection()->transform(function ($entry) {
-            $entry->created_by_name = ActivityLogService::resolveNameFromTypeId($entry->created_by_type, $entry->created_by);
-            $entry->updated_by_name = ActivityLogService::resolveNameFromTypeId($entry->updated_by_type, $entry->updated_by_id);
-            $entry->source_document = JournalEntry::getSourceDocument((int) $entry->id);
-            return $entry;
-        });
-
+        // Keep index lightweight: no per-entry footprint/source lookups here.
+        // Detailed metadata is loaded on-demand via show() when viewing/editing.
         return response()->json($entries);
     }
 
