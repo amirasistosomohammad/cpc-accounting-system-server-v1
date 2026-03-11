@@ -9,6 +9,7 @@ use App\Models\Payment;
 use App\Models\Client;
 use App\Models\Supplier;
 use App\Models\ChartOfAccount;
+use App\Models\AccountType;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -67,13 +68,30 @@ class DashboardController extends Controller
      */
     private function getFinancialOverview($startDate, $endDate): array
     {
+        $accountId = request()->attributes->get('current_account_id');
+        
         // Total Income (from invoices)
         $totalIncome = Invoice::whereBetween('invoice_date', [$startDate, $endDate])
+            ->when($accountId, fn($q) => $q->where('account_id', $accountId))
             ->sum('total_amount');
 
-        // Total Expenses (from bills)
-        $totalExpenses = Bill::whereBetween('bill_date', [$startDate, $endDate])
-            ->sum('total_amount');
+        // Total Expenses: Calculate from journal entries with expense category accounts
+        // This ensures bills using asset accounts (e.g., Advances to Suppliers) are not counted as expenses
+        $expenseAccountIds = ChartOfAccount::whereHas('accountType', function ($q) {
+                $q->where('category', AccountType::CATEGORY_EXPENSE);
+            })
+            ->when($accountId, fn($q) => $q->where('account_id', $accountId))
+            ->pluck('id');
+        
+        $totalExpenses = 0;
+        if ($expenseAccountIds->isNotEmpty()) {
+            $totalExpenses = DB::table('journal_entry_lines')
+                ->join('journal_entries', 'journal_entry_lines.journal_entry_id', '=', 'journal_entries.id')
+                ->whereIn('journal_entry_lines.account_id', $expenseAccountIds)
+                ->whereBetween('journal_entries.entry_date', [$startDate, $endDate])
+                ->when($accountId, fn($q) => $q->where('journal_entries.account_id', $accountId))
+                ->sum(DB::raw('journal_entry_lines.debit_amount - journal_entry_lines.credit_amount'));
+        }
 
         // Net Income
         $netIncome = $totalIncome - $totalExpenses;
@@ -88,14 +106,16 @@ class DashboardController extends Controller
 
         // Accounts Receivable (unpaid invoices)
         $accountsReceivable = Invoice::where('status', '!=', 'paid')
+            ->when($accountId, fn($q) => $q->where('account_id', $accountId))
             ->sum('total_amount');
 
         // Accounts Payable (unpaid bills)
         $accountsPayable = Bill::where('status', '!=', 'paid')
+            ->when($accountId, fn($q) => $q->where('account_id', $accountId))
             ->sum('total_amount');
 
         // Total Journal Entries
-        $totalJournalEntries = JournalEntry::count();
+        $totalJournalEntries = JournalEntry::when($accountId, fn($q) => $q->where('account_id', $accountId))->count();
 
         return [
             'totalIncome' => (float) $totalIncome,
@@ -175,8 +195,11 @@ class DashboardController extends Controller
      */
     private function getMonthlyData($startDate, $endDate): array
     {
+        $accountId = request()->attributes->get('current_account_id');
+        
         // Get invoices grouped by month
         $invoicesByMonth = Invoice::whereBetween('invoice_date', [$startDate, $endDate])
+            ->when($accountId, fn($q) => $q->where('account_id', $accountId))
             ->select(
                 DB::raw('DATE_FORMAT(invoice_date, "%Y-%m") as month'),
                 DB::raw('SUM(total_amount) as total')
@@ -186,20 +209,34 @@ class DashboardController extends Controller
             ->get()
             ->keyBy('month');
 
-        // Get bills grouped by month
-        $billsByMonth = Bill::whereBetween('bill_date', [$startDate, $endDate])
-            ->select(
-                DB::raw('DATE_FORMAT(bill_date, "%Y-%m") as month'),
-                DB::raw('SUM(total_amount) as total')
-            )
-            ->groupBy('month')
-            ->orderBy('month')
-            ->get()
-            ->keyBy('month');
+        // Get expenses from journal entries with expense category accounts (not from bills directly)
+        // This ensures bills using asset accounts are not counted as expenses
+        $expenseAccountIds = ChartOfAccount::whereHas('accountType', function ($q) {
+                $q->where('category', AccountType::CATEGORY_EXPENSE);
+            })
+            ->when($accountId, fn($q) => $q->where('account_id', $accountId))
+            ->pluck('id');
+        
+        $expensesByMonth = collect();
+        if ($expenseAccountIds->isNotEmpty()) {
+            $expensesByMonth = DB::table('journal_entry_lines')
+                ->join('journal_entries', 'journal_entry_lines.journal_entry_id', '=', 'journal_entries.id')
+                ->whereIn('journal_entry_lines.account_id', $expenseAccountIds)
+                ->whereBetween('journal_entries.entry_date', [$startDate, $endDate])
+                ->when($accountId, fn($q) => $q->where('journal_entries.account_id', $accountId))
+                ->select(
+                    DB::raw('DATE_FORMAT(journal_entries.entry_date, "%Y-%m") as month'),
+                    DB::raw('SUM(journal_entry_lines.debit_amount - journal_entry_lines.credit_amount) as total')
+                )
+                ->groupBy('month')
+                ->orderBy('month')
+                ->get()
+                ->keyBy('month');
+        }
 
         // Combine months
         $allMonths = collect($invoicesByMonth->keys())
-            ->merge($billsByMonth->keys())
+            ->merge($expensesByMonth->keys())
             ->unique()
             ->sort()
             ->values();
@@ -209,7 +246,7 @@ class DashboardController extends Controller
             $monthlyData[] = [
                 'month' => $month,
                 'income' => (float) ($invoicesByMonth[$month]->total ?? 0),
-                'expenses' => (float) ($billsByMonth[$month]->total ?? 0),
+                'expenses' => (float) ($expensesByMonth[$month]->total ?? 0),
             ];
         }
 
@@ -221,8 +258,11 @@ class DashboardController extends Controller
      */
     private function getTopAccounts($startDate, $endDate): array
     {
+        $accountId = request()->attributes->get('current_account_id');
+        
         // Top Income Accounts
         $topIncomeAccounts = Invoice::whereBetween('invoice_date', [$startDate, $endDate])
+            ->when($accountId, fn($q) => $q->where('account_id', $accountId))
             ->with('incomeAccount')
             ->select('income_account_id', DB::raw('SUM(total_amount) as total'))
             ->groupBy('income_account_id')
@@ -236,20 +276,38 @@ class DashboardController extends Controller
                 ];
             });
 
-        // Top Expense Accounts
-        $topExpenseAccounts = Bill::whereBetween('bill_date', [$startDate, $endDate])
-            ->with('expenseAccount')
-            ->select('expense_account_id', DB::raw('SUM(total_amount) as total'))
-            ->groupBy('expense_account_id')
-            ->orderByDesc('total')
-            ->limit(5)
-            ->get()
-            ->map(function ($item) {
-                return [
-                    'account_name' => $item->expenseAccount->account_name ?? 'Other',
-                    'total' => (float) $item->total,
-                ];
-            });
+        // Top Expense Accounts: Calculate from journal entries with expense category accounts only
+        // This ensures bills using asset accounts are not included in expense accounts
+        $expenseAccountIds = ChartOfAccount::whereHas('accountType', function ($q) {
+                $q->where('category', AccountType::CATEGORY_EXPENSE);
+            })
+            ->when($accountId, fn($q) => $q->where('account_id', $accountId))
+            ->pluck('id');
+        
+        $topExpenseAccounts = collect();
+        if ($expenseAccountIds->isNotEmpty()) {
+            $topExpenseAccounts = DB::table('journal_entry_lines')
+                ->join('journal_entries', 'journal_entry_lines.journal_entry_id', '=', 'journal_entries.id')
+                ->join('chart_of_accounts', 'journal_entry_lines.account_id', '=', 'chart_of_accounts.id')
+                ->whereIn('journal_entry_lines.account_id', $expenseAccountIds)
+                ->whereBetween('journal_entries.entry_date', [$startDate, $endDate])
+                ->when($accountId, fn($q) => $q->where('journal_entries.account_id', $accountId))
+                ->select(
+                    'journal_entry_lines.account_id',
+                    'chart_of_accounts.account_name',
+                    DB::raw('SUM(journal_entry_lines.debit_amount - journal_entry_lines.credit_amount) as total')
+                )
+                ->groupBy('journal_entry_lines.account_id', 'chart_of_accounts.account_name')
+                ->orderByDesc('total')
+                ->limit(5)
+                ->get()
+                ->map(function ($item) {
+                    return [
+                        'account_name' => $item->account_name ?? 'Other',
+                        'total' => (float) $item->total,
+                    ];
+                });
+        }
 
         return [
             'income' => $topIncomeAccounts,

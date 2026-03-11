@@ -22,7 +22,7 @@ class BillController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = Bill::with(['supplier', 'expenseAccount']);
+        $query = Bill::with(['supplier', 'expenseAccount', 'convertedExpenseAccount']);
 
         // Filter by supplier
         if ($request->has('supplier_id')) {
@@ -62,7 +62,7 @@ class BillController extends Controller
      */
     public function show($id): JsonResponse
     {
-        $bill = Bill::with(['supplier', 'expenseAccount', 'payments.cashAccount'])->findOrFail($id);
+        $bill = Bill::with(['supplier', 'expenseAccount.accountType', 'convertedExpenseAccount', 'conversionJournalEntry', 'payments.cashAccount'])->findOrFail($id);
         $bill->created_by_name = ActivityLogService::resolveNameFromTypeId($bill->created_by_type, $bill->created_by_id);
         $bill->updated_by_name = ActivityLogService::resolveNameFromTypeId($bill->updated_by_type, $bill->updated_by_id);
 
@@ -79,6 +79,8 @@ class BillController extends Controller
             'supplier_id' => ['required', Rule::exists('suppliers', 'id')->where('account_id', $accountId)],
             'bill_date' => 'required|date',
             'due_date' => 'nullable|date',
+            // Note: expense_account_id can be either expense or asset account
+            // Asset accounts (e.g., "Advances to Suppliers", "Prepaid Expenses") are used for advance payments
             'expense_account_id' => ['required', Rule::exists('chart_of_accounts', 'id')->where('account_id', $accountId)],
             'total_amount' => 'required|numeric|min:0',
             'description' => 'nullable|string',
@@ -123,7 +125,9 @@ class BillController extends Controller
             ]);
 
             // Create journal entry lines
-            // DR: Expense Account
+            // DR: Account (can be expense or asset, depending on bill type)
+            // For regular bills: expense account
+            // For advance payments: asset account (e.g., "Advances to Suppliers", "Prepaid Expenses")
             JournalEntryLine::create([
                 'journal_entry_id' => $journalEntry->id,
                 'account_id' => $validated['expense_account_id'],
@@ -311,6 +315,287 @@ class BillController extends Controller
 
             return response()->json([
                 'message' => 'Failed to delete bill.',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Convert an asset bill to expense (for advance payments that are now completed)
+     * This creates a reversing entry: DR: Expense Account, CR: Asset Account
+     */
+    public function convertToExpense(Request $request, $id): JsonResponse
+    {
+        $bill = Bill::with(['expenseAccount.accountType'])->findOrFail($id);
+        $user = $request->user();
+        $accountId = $request->attributes->get('current_account_id');
+
+        // Validation: Bill must be fully paid
+        if ($bill->balance > 0) {
+            return response()->json([
+                'message' => 'Bill must be fully paid before converting to expense. Current balance: ' . number_format($bill->balance, 2)
+            ], 422);
+        }
+
+        // Validation: Bill must use an asset account
+        $accountCategory = $bill->expenseAccount->account_type_category ?? null;
+        if ($accountCategory !== 'asset') {
+            return response()->json([
+                'message' => 'This bill does not use an asset account. Only asset bills (advance payments) can be converted to expense.'
+            ], 422);
+        }
+
+        // Validation: Bill must not already be converted
+        if ($bill->converted_to_expense_at !== null) {
+            return response()->json([
+                'message' => 'This bill has already been converted to expense.'
+            ], 422);
+        }
+
+        // Validate expense account selection
+        $validated = $request->validate([
+            'expense_account_id' => ['required', Rule::exists('chart_of_accounts', 'id')->where('account_id', $accountId)],
+        ]);
+
+        // Verify the selected account is an expense account
+        $expenseAccount = \App\Models\ChartOfAccount::with('accountType')->find($validated['expense_account_id']);
+        if (!$expenseAccount) {
+            return response()->json([
+                'message' => 'Selected expense account not found.'
+            ], 422);
+        }
+
+        $expenseAccountCategory = $expenseAccount->account_type_category ?? null;
+        if ($expenseAccountCategory !== 'expense') {
+            return response()->json([
+                'message' => 'Selected account must be an expense account.'
+            ], 422);
+        }
+
+        try {
+            DB::beginTransaction();
+            $footprint = ActivityLogService::getUserTypeAndId($request->user());
+            $oldValues = $bill->toArray();
+
+            // Create reversing journal entry
+            // DR: Expense Account (selected by user)
+            // CR: Asset Account (original bill account)
+            $journalEntry = JournalEntry::create([
+                'account_id' => $accountId,
+                'entry_number' => JournalEntry::generateEntryNumber(),
+                'entry_date' => now()->toDateString(),
+                'description' => "Convert Bill {$bill->bill_number} from Asset to Expense - " . ($bill->description ?? 'Advance payment completed'),
+                'reference_number' => $bill->bill_number . '-CONV',
+                'total_debit' => $bill->total_amount,
+                'total_credit' => $bill->total_amount,
+                'created_by' => $request->user()->id ?? null,
+                'created_by_type' => $footprint['user_type'],
+            ]);
+
+            // DR: Expense Account
+            JournalEntryLine::create([
+                'journal_entry_id' => $journalEntry->id,
+                'account_id' => $validated['expense_account_id'],
+                'debit_amount' => $bill->total_amount,
+                'credit_amount' => 0,
+                'description' => "Convert Bill {$bill->bill_number} to expense",
+            ]);
+
+            // CR: Asset Account (original bill account)
+            JournalEntryLine::create([
+                'journal_entry_id' => $journalEntry->id,
+                'account_id' => $bill->expense_account_id,
+                'debit_amount' => 0,
+                'credit_amount' => $bill->total_amount,
+                'description' => "Convert Bill {$bill->bill_number} from asset",
+            ]);
+
+            // Update bill with conversion details
+            $bill->update([
+                'converted_to_expense_at' => now(),
+                'converted_expense_account_id' => $validated['expense_account_id'],
+                'conversion_journal_entry_id' => $journalEntry->id,
+                'updated_by_type' => $footprint['user_type'],
+                'updated_by_id' => $footprint['user_id'],
+            ]);
+
+            DB::commit();
+
+            ActivityLogService::log('converted_to_expense', $user, Bill::class, $bill->id, $oldValues, $bill->fresh()->toArray(), null, $request->input('remarks'), $request);
+            $bill->load(['supplier', 'expenseAccount', 'convertedExpenseAccount']);
+
+            return response()->json([
+                'message' => 'Bill converted to expense successfully.',
+                'bill' => $bill
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Bill Conversion Failed: ' . $e->getMessage());
+
+            return response()->json([
+                'message' => 'Failed to convert bill to expense.',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Edit conversion: Change the expense account for an already converted bill
+     * Creates reversing entries and a new conversion entry
+     */
+    public function editConversion(Request $request, $id): JsonResponse
+    {
+        $bill = Bill::with(['expenseAccount.accountType', 'convertedExpenseAccount', 'conversionJournalEntry'])->findOrFail($id);
+        $user = $request->user();
+        $accountId = $request->attributes->get('current_account_id');
+
+        // Validation: Bill must be fully paid
+        if ($bill->balance > 0) {
+            return response()->json([
+                'message' => 'Bill must be fully paid before editing conversion. Current balance: ' . number_format($bill->balance, 2)
+            ], 422);
+        }
+
+        // Validation: Bill must be already converted
+        if ($bill->converted_to_expense_at === null) {
+            return response()->json([
+                'message' => 'This bill has not been converted to expense yet.'
+            ], 422);
+        }
+
+        // Validation: Bill must use an asset account
+        $accountCategory = $bill->expenseAccount->account_type_category ?? null;
+        if ($accountCategory !== 'asset') {
+            return response()->json([
+                'message' => 'This bill does not use an asset account. Only asset bills (advance payments) can have conversions edited.'
+            ], 422);
+        }
+
+        // Validate expense account selection
+        $validated = $request->validate([
+            'expense_account_id' => ['required', Rule::exists('chart_of_accounts', 'id')->where('account_id', $accountId)],
+        ]);
+
+        // Verify the selected account is an expense account
+        $expenseAccount = \App\Models\ChartOfAccount::with('accountType')->find($validated['expense_account_id']);
+        if (!$expenseAccount) {
+            return response()->json([
+                'message' => 'Selected expense account not found.'
+            ], 422);
+        }
+
+        $expenseAccountCategory = $expenseAccount->account_type_category ?? null;
+        if ($expenseAccountCategory !== 'expense') {
+            return response()->json([
+                'message' => 'Selected account must be an expense account.'
+            ], 422);
+        }
+
+        // Check if the new expense account is different from the current one
+        if ($bill->converted_expense_account_id == $validated['expense_account_id']) {
+            return response()->json([
+                'message' => 'The selected expense account is the same as the current one.'
+            ], 422);
+        }
+
+        try {
+            DB::beginTransaction();
+            $footprint = ActivityLogService::getUserTypeAndId($request->user());
+            $oldValues = $bill->toArray();
+
+            $oldExpenseAccount = $bill->convertedExpenseAccount;
+            $oldJournalEntryId = $bill->conversion_journal_entry_id;
+
+            // Step 1: Reverse the old conversion entry
+            // DR: Old Expense Account (credit it back)
+            // CR: Asset Account (debit it back)
+            $reversingEntry = JournalEntry::create([
+                'account_id' => $accountId,
+                'entry_number' => JournalEntry::generateEntryNumber(),
+                'entry_date' => now()->toDateString(),
+                'description' => "Reverse conversion for Bill {$bill->bill_number} - Changing expense account",
+                'reference_number' => $bill->bill_number . '-CONV-REV',
+                'total_debit' => $bill->total_amount,
+                'total_credit' => $bill->total_amount,
+                'created_by' => $request->user()->id ?? null,
+                'created_by_type' => $footprint['user_type'],
+            ]);
+
+            // DR: Old Expense Account (reverse the debit)
+            JournalEntryLine::create([
+                'journal_entry_id' => $reversingEntry->id,
+                'account_id' => $bill->converted_expense_account_id,
+                'debit_amount' => 0,
+                'credit_amount' => $bill->total_amount,
+                'description' => "Reverse conversion from {$oldExpenseAccount->account_code}",
+            ]);
+
+            // CR: Asset Account (reverse the credit)
+            JournalEntryLine::create([
+                'journal_entry_id' => $reversingEntry->id,
+                'account_id' => $bill->expense_account_id,
+                'debit_amount' => $bill->total_amount,
+                'credit_amount' => 0,
+                'description' => "Reverse conversion for Bill {$bill->bill_number}",
+            ]);
+
+            // Step 2: Create new conversion entry with new expense account
+            // DR: New Expense Account
+            // CR: Asset Account
+            $newJournalEntry = JournalEntry::create([
+                'account_id' => $accountId,
+                'entry_number' => JournalEntry::generateEntryNumber(),
+                'entry_date' => now()->toDateString(),
+                'description' => "Convert Bill {$bill->bill_number} from Asset to Expense (Updated) - " . ($bill->description ?? 'Advance payment completed'),
+                'reference_number' => $bill->bill_number . '-CONV',
+                'total_debit' => $bill->total_amount,
+                'total_credit' => $bill->total_amount,
+                'created_by' => $request->user()->id ?? null,
+                'created_by_type' => $footprint['user_type'],
+            ]);
+
+            // DR: New Expense Account
+            JournalEntryLine::create([
+                'journal_entry_id' => $newJournalEntry->id,
+                'account_id' => $validated['expense_account_id'],
+                'debit_amount' => $bill->total_amount,
+                'credit_amount' => 0,
+                'description' => "Convert Bill {$bill->bill_number} to expense (updated)",
+            ]);
+
+            // CR: Asset Account
+            JournalEntryLine::create([
+                'journal_entry_id' => $newJournalEntry->id,
+                'account_id' => $bill->expense_account_id,
+                'debit_amount' => 0,
+                'credit_amount' => $bill->total_amount,
+                'description' => "Convert Bill {$bill->bill_number} from asset",
+            ]);
+
+            // Step 3: Update bill with new conversion details
+            $bill->update([
+                'converted_to_expense_at' => now(), // Update timestamp to reflect the edit
+                'converted_expense_account_id' => $validated['expense_account_id'],
+                'conversion_journal_entry_id' => $newJournalEntry->id,
+                'updated_by_type' => $footprint['user_type'],
+                'updated_by_id' => $footprint['user_id'],
+            ]);
+
+            DB::commit();
+
+            ActivityLogService::log('edited_conversion', $user, Bill::class, $bill->id, $oldValues, $bill->fresh()->toArray(), null, $request->input('remarks'), $request);
+            $bill->load(['supplier', 'expenseAccount', 'convertedExpenseAccount', 'conversionJournalEntry']);
+
+            return response()->json([
+                'message' => 'Conversion updated successfully. Old conversion reversed and new conversion created.',
+                'bill' => $bill
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Edit Conversion Failed: ' . $e->getMessage());
+
+            return response()->json([
+                'message' => 'Failed to edit conversion.',
                 'error' => $e->getMessage()
             ], 500);
         }

@@ -97,6 +97,8 @@ Route::middleware([
         // Suppliers & Accounts Payable
         Route::apiResource('suppliers', \App\Http\Controllers\SupplierController::class);
         Route::apiResource('bills', \App\Http\Controllers\BillController::class);
+        Route::post('bills/{id}/convert-to-expense', [\App\Http\Controllers\BillController::class, 'convertToExpense']);
+        Route::post('bills/{id}/edit-conversion', [\App\Http\Controllers\BillController::class, 'editConversion']);
 
         // Payments (Receipts & Payments)
         Route::post('payments/{id}/void', [\App\Http\Controllers\PaymentController::class, 'void']);

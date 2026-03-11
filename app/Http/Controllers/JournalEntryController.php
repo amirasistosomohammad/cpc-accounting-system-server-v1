@@ -58,6 +58,11 @@ class JournalEntryController extends Controller
             ->orderBy('id', 'desc')
             ->paginate($request->get('per_page', 15));
 
+        // If include_lines is requested (e.g., for Expenses/Income components), load lines with accounts
+        if ($request->get('include_lines') === 'true') {
+            $entries->load(['lines.account.accountType']);
+        }
+
         // Efficiently attach footprint + source_document using batched lookups
         $entryIds = $entries->pluck('id')->all();
 
@@ -75,7 +80,12 @@ class JournalEntryController extends Controller
                 ->get(['id', 'journal_entry_id', 'bill_number'])
                 ->keyBy('journal_entry_id');
 
-            $entries->getCollection()->transform(function ($entry) use ($invoices, $payments, $bills) {
+            // Also check for conversion entries (linked via conversion_journal_entry_id)
+            $convertedBills = Bill::whereIn('conversion_journal_entry_id', $entryIds)
+                ->get(['id', 'conversion_journal_entry_id', 'bill_number'])
+                ->keyBy('conversion_journal_entry_id');
+
+            $entries->getCollection()->transform(function ($entry) use ($invoices, $payments, $bills, $convertedBills) {
                 $entry->created_by_name = ActivityLogService::resolveNameFromTypeId($entry->created_by_type, $entry->created_by);
                 $entry->updated_by_name = ActivityLogService::resolveNameFromTypeId($entry->updated_by_type, $entry->updated_by_id);
 
@@ -103,6 +113,22 @@ class JournalEntryController extends Controller
                         'reference' => $bill->bill_number,
                         'id' => $bill->id,
                         'edit_hint' => 'Edit or void from Suppliers / AP.',
+                    ];
+                } elseif ($convertedBills->has($entry->id)) {
+                    $bill = $convertedBills->get($entry->id);
+                    $source = [
+                        'type' => 'bill_conversion',
+                        'reference' => $bill->bill_number,
+                        'id' => $bill->id,
+                        'edit_hint' => 'This is a conversion entry. To change the expense account, use "Edit Conversion" from the Bill details.',
+                    ];
+                } elseif ($entry->reference_number && preg_match('/BILL-\d{8}-\d+-CONV/', $entry->reference_number)) {
+                    // Protect ALL conversion-related entries (old, superseded, reversing)
+                    $source = [
+                        'type' => 'bill_conversion',
+                        'reference' => $entry->reference_number,
+                        'id' => null,
+                        'edit_hint' => 'This is a system-generated conversion or reversal entry. It cannot be edited or deleted.',
                     ];
                 }
 

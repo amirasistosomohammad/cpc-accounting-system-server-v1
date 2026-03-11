@@ -22,6 +22,9 @@ class Bill extends Model
         'description',
         'status',
         'journal_entry_id',
+        'converted_to_expense_at',
+        'converted_expense_account_id',
+        'conversion_journal_entry_id',
         'created_by_type',
         'created_by_id',
         'updated_by_type',
@@ -34,6 +37,7 @@ class Bill extends Model
         'total_amount' => 'decimal:2',
         'paid_amount' => 'decimal:2',
         'balance' => 'decimal:2',
+        'converted_to_expense_at' => 'datetime',
     ];
 
     /**
@@ -45,7 +49,11 @@ class Bill extends Model
     }
 
     /**
-     * Get the expense account
+     * Get the account used for this bill
+     * Note: Despite the field name "expense_account_id", this can be either:
+     * - An expense account (for regular bills)
+     * - An asset account (for advance payments, prepaid expenses, work in progress)
+     * The account type determines how it appears in financial reports.
      */
     public function expenseAccount()
     {
@@ -66,6 +74,22 @@ class Bill extends Model
     public function payments()
     {
         return $this->hasMany(Payment::class);
+    }
+
+    /**
+     * Get the expense account used for conversion
+     */
+    public function convertedExpenseAccount()
+    {
+        return $this->belongsTo(ChartOfAccount::class, 'converted_expense_account_id');
+    }
+
+    /**
+     * Get the conversion journal entry
+     */
+    public function conversionJournalEntry()
+    {
+        return $this->belongsTo(JournalEntry::class, 'conversion_journal_entry_id');
     }
 
     /**

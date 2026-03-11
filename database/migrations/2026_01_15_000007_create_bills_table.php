@@ -17,7 +17,11 @@ return new class extends Migration
             $table->unsignedBigInteger('supplier_id');
             $table->date('bill_date');
             $table->date('due_date')->nullable();
-            $table->unsignedBigInteger('expense_account_id'); // Account from COA (e.g., 6030, 6210)
+            // Note: Despite the name "expense_account_id", this can be either:
+            // - Expense account (for regular bills)
+            // - Asset account (for advance payments, prepaid expenses, work in progress)
+            // The account type determines how it appears in financial reports.
+            $table->unsignedBigInteger('expense_account_id'); // Account from COA (expense or asset)
             $table->decimal('total_amount', 15, 2);
             $table->decimal('paid_amount', 15, 2)->default(0);
             $table->decimal('balance', 15, 2); // total_amount - paid_amount

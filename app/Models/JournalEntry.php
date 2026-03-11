@@ -75,6 +75,29 @@ class JournalEntry extends Model
             ];
         }
 
+        // Check if this is a conversion entry (linked via conversion_journal_entry_id)
+        $convertedBill = \App\Models\Bill::where('conversion_journal_entry_id', $journalEntryId)->first();
+        if ($convertedBill) {
+            return [
+                'type' => 'bill_conversion',
+                'reference' => $convertedBill->bill_number,
+                'id' => $convertedBill->id,
+                'edit_hint' => 'This is a conversion entry. To change the expense account, use "Edit Conversion" from the Bill details.',
+            ];
+        }
+
+        // Protect ALL conversion-related entries (including old/superseded ones and reversing entries)
+        // reference_number patterns: BILL-xxx-CONV, BILL-xxx-CONV-REV
+        $entry = self::find($journalEntryId);
+        if ($entry && $entry->reference_number && preg_match('/BILL-\d{8}-\d+-CONV/', $entry->reference_number)) {
+            return [
+                'type' => 'bill_conversion',
+                'reference' => $entry->reference_number,
+                'id' => null,
+                'edit_hint' => 'This is a system-generated conversion or reversal entry. It cannot be edited or deleted.',
+            ];
+        }
+
         return null;
     }
 
